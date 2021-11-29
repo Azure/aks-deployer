@@ -7,11 +7,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const (
-	// AksAppKindStr is AksApp Kind
-	AksAppKindStr = "AksApp"
-)
-
 // AksAppSpec defines the desired state of AksApp
 type AksAppSpec struct {
 	Type      string            `json:"type"`
