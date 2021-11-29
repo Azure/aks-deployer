@@ -7,26 +7,99 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+const (
+	// AksAppKindStr is AksApp Kind
+	AksAppKindStr = "AksApp"
+)
 
 // AksAppSpec defines the desired state of AksApp
 type AksAppSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	Type      string            `json:"type"`
+	Version   string            `json:"version"`
+	Variables map[string]string `json:"variables"`
+	// TODO: Remove 'Credentials' and leave only 'Secrets'
+	// +optional
+	// +nullable
+	Credentials map[string]string `json:"credentials"`
+	// +optional
+	// +nullable
+	Secrets map[string]string `json:"secrets"`
+	// +optional
+	// +nullable
+	UnmanagedSecrets []string `json:"unmanagedSecrets"`
+}
 
-	// Foo is an example field of AksApp. Edit aksapp_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+// RolloutStatus is the type for rollout status
+type RolloutStatus string
+
+// These are the valid rollout statuses.
+const (
+	RolloutCompleted  RolloutStatus = "Completed"
+	RolloutFailed     RolloutStatus = "Failed"
+	RolloutInProgress RolloutStatus = "InProgress"
+)
+
+// ReconciliationResult is the type for reconciliation result
+type ReconciliationResult string
+
+// These are the valid reconciliation results.
+const (
+	ReconciliationSucceeded ReconciliationResult = "Succeeded"
+	ReconciliationFailed    ReconciliationResult = "Failed"
+)
+
+// Reconciliation is the type for reconciliation
+type Reconciliation struct {
+	// +nullable
+	// +optional
+	LastReconcileTime metav1.Time `json:"lastReconcileTime,omitempty"`
+	// +optional
+	Message string `json:"message,omitempty"`
+	// +optional
+	OperationID string `json:"operationId,omitempty"`
+	// +optional
+	Result ReconciliationResult `json:"result,omitempty"`
+}
+
+// Rollout is the type for rollout
+type Rollout struct {
+	// +optional
+	Name string `json:"name"`
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+	// +optional
+	UnavailableReplicas int32 `json:"unavailableReplicas,omitempty"`
+	// +optional
+	Rollout RolloutStatus `json:"rollout"`
 }
 
 // AksAppStatus defines the observed state of AksApp
 type AksAppStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Number of total replicas per AksApp
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+	// Number of total unavailable replicas per AksApp
+	// +optional
+	UnavailableReplicas int32 `json:"unavailableReplicas,omitempty"`
+	// Rollout version of AksApp
+	// +optional
+	RolloutVersion string `json:"rolloutVersion"`
+	// Rollout status of AksApp
+	// +optional
+	Rollout RolloutStatus `json:"rollout"`
+	// Reconciliation result of AksApp
+	// +optional
+	Reconciliation Reconciliation `json:"reconciliation,omitempty"`
+	// The list of all rollouts per AksApp
+	// +optional
+	Rollouts []Rollout `json:"rollouts,omitempty"`
 }
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="VERSION",type=string,JSONPath=`.spec.version`
+// +kubebuilder:printcolumn:name="TYPE",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="AGE",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // AksApp is the Schema for the aksapps API
 type AksApp struct {
