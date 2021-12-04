@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/services/keyvault/2016-10-01/keyvault"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,7 +20,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	deployerv1 "github.com/Azure/aks-deployer/pkg/api/v1"
+	"github.com/Azure/aks-deployer/pkg/auth/tokenprovider"
 	"github.com/Azure/aks-deployer/pkg/configmaps"
+	"github.com/Azure/aks-deployer/pkg/secret"
 	uuid "github.com/satori/go.uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -179,8 +182,35 @@ func (r *AksAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		data = strings.ReplaceAll(data, keyPlaceHolder, v)
 	}
 
-	// TODO: port remaining code
+	// 4. Replace credentials
+	// Note: credential placeholders e.g. (V_XXX) will be replaced with key vault
+	//       URLs that are retrieved automatically.
+	var keyVaultSecretProvider secret.KeyvaultSecretProvider
+	var keyVaultClient keyvault.BaseClient
 
+	// TODO: Remove 'else' after fully migrating to identity resource ID
+	if useIdentityResourceID {
+		keyVaultSecretProvider, err = r.getKeyVaultSecretProvider()
+		if err != nil {
+			logger.Errorf("unable to get key vault secret provider, %s", err.Error())
+			r.updateFailedReconciliation(app, getSecretProviderErr, operationID, logger)
+			return ctrl.Result{}, err
+		}
+		logger.Infof("use managed service identity to get secret from key vault")
+	} else {
+		keyVaultClient, err = r.getKeyVaultClient()
+		if err != nil {
+			logger.Errorf("unable to get key vault client, %s", err.Error())
+			r.updateFailedReconciliation(app, getSecretProviderErr, operationID, logger)
+			return ctrl.Result{}, err
+		}
+		logger.Infof("use service principal to get secret from key vault")
+	}
+
+	// TODO: port remaining code
+	// Add logging to remove compilation error. Remove when adding actual code
+	logger.Info(keyVaultSecretProvider)
+	logger.Info(keyVaultClient)
 	return ctrl.Result{}, nil
 }
 
@@ -194,4 +224,17 @@ func (r *AksAppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&deployerv1.AksApp{}).
 		Complete(r)
+}
+
+func (r *AksAppReconciler) getKeyVaultSecretProvider() (secret.KeyvaultSecretProvider, error) {
+	tokenProvider, err := tokenprovider.NewMsiTokenProvider(os.Getenv(identityResourceIDStr))
+	if err != nil {
+		return nil, err
+	}
+	return secret.NewKeyvaultSecretProviderFromTokenProvider(os.Getenv(keyVaultResourceStr), tokenProvider)
+}
+
+func (r *AksAppReconciler) getKeyVaultClient() (keyvault.BaseClient, error) {
+	// TODO: add the code
+	return keyvault.BaseClient{}, nil
 }
