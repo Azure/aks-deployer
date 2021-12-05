@@ -37,6 +37,7 @@ import (
 
 	deployerv1 "github.com/Azure/aks-deployer/pkg/api/v1"
 	"github.com/Azure/aks-deployer/pkg/auth/tokenprovider"
+	"github.com/Azure/azure-sdk-for-go/services/keyvault/auth"
 	"github.com/Azure/aks-deployer/pkg/configmaps"
 	"github.com/Azure/aks-deployer/pkg/log"
 	"github.com/Azure/aks-deployer/pkg/secret"
@@ -766,11 +767,128 @@ func (r *AksAppReconciler) isManagedByAksApp(d appsv1.Deployment) bool {
 	return false
 }
 
-// ?????????
+func (r *AksAppReconciler) monitorUnavailableReplicas() {
+	ctx := context.Background()
+	fields := map[string]interface{}{
+		"aksapp":      "monitorUnavailableReplicas",
+		"operationID": uuid.NewV4().String(),
+	}
+	logger := r.Logger.WithFields(fields)
 
-func (r *AksAppReconciler) updateFailedReconciliation(app deployerv1.AksApp,
-	reason, operationID string, logger *logrus.Entry) {
-	// TODO: add actual code.
+	var curDeploymentList appsv1.DeploymentList
+	if err := r.List(ctx, &curDeploymentList); err != nil {
+		logger.Errorf("unable to list deployments in all namespaces, %s", err.Error())
+		return
+	}
+
+	unavailableReplicasVec.Reset()
+	allReplicasVec.Reset()
+	for _, d := range curDeploymentList.Items {
+		if r.isManagedByAksApp(d) {
+			unavailablePercentage := float64(0)
+			if d.Status.Replicas > 0 {
+				unavailablePercentage = float64(d.Status.UnavailableReplicas * 100 / d.Status.Replicas)
+			}
+			unavailableReplicasVec.WithLabelValues(d.Name, d.Namespace).Set(unavailablePercentage)
+			allReplicasVec.WithLabelValues(d.Name, d.Namespace).Set(float64(d.Status.Replicas))
+			if d.Status.UnavailableReplicas > 0 {
+				logger.Infof("%d/%d unavailable replicas in deployment %s/%s",
+					d.Status.UnavailableReplicas, d.Status.Replicas, d.Namespace, d.Name)
+			}
+		}
+	}
+}
+
+func (r *AksAppReconciler) monitorServiceVersion() {
+	ctx := context.Background()
+	fields := map[string]interface{}{
+		"aksapp":      "monitorServiceVersion",
+		"operationID": uuid.NewV4().String(),
+	}
+	logger := r.Logger.WithFields(fields)
+
+	var curAppList deployerv1.AksAppList
+	if err := r.List(ctx, &curAppList); err != nil {
+		logger.Errorf("unable to list aksapps in all namespaces, %s", err.Error())
+		return
+	}
+
+	serviceVersionVec.Reset()
+	for _, app := range curAppList.Items {
+		serviceVersionVec.WithLabelValues(app.Name, app.Spec.Type, app.Spec.Version).Inc()
+	}
+}
+
+func (r *AksAppReconciler) monitorSecretVersion() {
+	ctx := context.Background()
+	fields := map[string]interface{}{
+		"aksapp":      "monitorSecretVersion",
+		"operationID": uuid.NewV4().String(),
+	}
+	logger := r.Logger.WithFields(fields)
+
+	var curSecretList corev1.SecretList
+	if err := r.List(ctx, &curSecretList); err != nil {
+		logger.Errorf("unable to list secrets in all namespaces, %s", err.Error())
+		return
+	}
+
+	secretVersionVec.Reset()
+	for _, secret := range curSecretList.Items {
+		var appName string
+		if r.UseOwnerReference {
+			// Get name in OwnerReference
+			for _, r := range secret.OwnerReferences {
+				if r.Kind == deployerv1.AksAppKindStr {
+					appName = r.Name
+				}
+			}
+		} else {
+			// Get name in NamespacedName
+			annotations := secret.GetAnnotations()
+			if _, ok := annotations[ownerAnnotation]; ok {
+				appName = annotations[ownerAnnotation]
+			}
+		}
+
+		if annotations := secret.GetAnnotations(); annotations != nil {
+			for k, v := range annotations {
+				if strings.HasPrefix(k, secretAnnotationPrefix) {
+					secretVersionVec.WithLabelValues(appName, k, v).Set(1)
+				}
+			}
+		}
+
+	}
+}
+
+// MonitorRoutine monitors aksapp
+func (r *AksAppReconciler) MonitorRoutine() {
+	for {
+		r.monitorServiceVersion()
+		r.monitorSecretVersion()
+		r.monitorUnavailableReplicas()
+		time.Sleep(monitorInterval)
+	}
+}
+
+// MetricResetRoutine resets metric
+func (r *AksAppReconciler) MetricResetRoutine() {
+	for {
+		r.resetReleaseResult()
+		time.Sleep(metricResetInterval)
+	}
+}
+
+func (r *AksAppReconciler) getKeyVaultClient() (keyvault.BaseClient, error) {
+	authorizer, err := auth.NewAuthorizerFromEnvironment()
+	if err != nil {
+		return keyvault.New(), err
+	}
+	keyVaultClient := keyvault.New()
+	keyVaultClient.Authorizer = authorizer
+	// keyVaultClient.Client.Sender
+	return keyVaultClient, nil
 }
 
 func (r *AksAppReconciler) getKeyVaultSecretProvider() (secret.KeyvaultSecretProvider, error) {
@@ -781,9 +899,150 @@ func (r *AksAppReconciler) getKeyVaultSecretProvider() (secret.KeyvaultSecretPro
 	return secret.NewKeyvaultSecretProviderFromTokenProvider(os.Getenv(keyVaultResourceStr), tokenProvider)
 }
 
-func (r *AksAppReconciler) getKeyVaultClient() (keyvault.BaseClient, error) {
-	// TODO: add the code
-	return keyvault.BaseClient{}, nil
+func (r *AksAppReconciler) updateRolloutStatus(app *deployerv1.AksApp,
+	objs []*unstructured.Unstructured, logger *logrus.Entry) error {
+	ctx := context.Background()
+	rollouts := []deployerv1.Rollout{}
+	rolloutStatus := deployerv1.RolloutCompleted
+	var replicas int32
+	var unavailableReplicas int32
+
+	// Collect rollout status from all Deployments
+	// TODO: collect rollout status from DaemonSets
+	for _, obj := range objs {
+		// Check if the resource is Deployment
+		if isAppsV1Deployment(obj) {
+			var deployment appsv1.Deployment
+			namespacedName := types.NamespacedName{
+				Name:      obj.GetName(),
+				Namespace: obj.GetNamespace(),
+			}
+
+			// Get the Deployment
+			if err := r.Get(ctx, namespacedName, &deployment); err != nil {
+				logger.Errorf("unable to get deployment %s, %s",
+					namespacedName, err.Error())
+				return err
+			}
+
+			// Check the rollout status and collect replica numbers
+			singleRolloutstatus := deployerv1.RolloutCompleted
+			if !DeploymentComplete(&deployment) {
+				singleRolloutstatus = deployerv1.RolloutInProgress
+				rolloutStatus = deployerv1.RolloutInProgress
+				logger.Warnf("deployment %s is not complete", namespacedName)
+			}
+			replicas += deployment.Status.Replicas
+			unavailableReplicas += deployment.Status.UnavailableReplicas
+
+			// Append the information
+			rollouts = append(rollouts, deployerv1.Rollout{
+				Name:                deployment.Name,
+				Replicas:            deployment.Status.Replicas,
+				Rollout:             singleRolloutstatus,
+				UnavailableReplicas: deployment.Status.UnavailableReplicas,
+			})
+		}
+	}
+
+	// Log if the new status is different from the current status
+	if rolloutStatus != app.Status.Rollout {
+		logger.Infof("update aksapp %s/%s rollout status from %s to %s",
+			app.Namespace, app.Name, app.Status.Rollout, rolloutStatus)
+	}
+
+	app.Status.Replicas = replicas
+	app.Status.UnavailableReplicas = unavailableReplicas
+	app.Status.RolloutVersion = app.Spec.Version
+	app.Status.Rollout = rolloutStatus
+	app.Status.Rollouts = rollouts
+
+	return nil
+}
+
+func (r *AksAppReconciler) updateFailedReconciliation(app deployerv1.AksApp,
+	reason, operationID string, logger *logrus.Entry) {
+	// log release result
+	r.logReleaseResult(app, resultFailed, reason, logger)
+
+	// update askapp reconciliation status
+	app.Status = deployerv1.AksAppStatus{
+		Reconciliation: deployerv1.Reconciliation{
+			LastReconcileTime: metav1.Now(),
+			Message:           reason,
+			OperationID:       operationID,
+			Result:            deployerv1.ReconciliationFailed,
+		},
+	}
+
+	ctx := context.TODO()
+	if err := r.Status().Update(ctx, &app); err != nil {
+		logger.Errorf("unable to update failed reconciliation status, %s", err.Error())
+		// do not need to return error here since reconciliation will always be retried
+	} else {
+		logger.Info("updated failed reconciliation status")
+	}
+}
+
+func (r *AksAppReconciler) updateSucceededReconciliation(app *deployerv1.AksApp,
+	objs []*unstructured.Unstructured,
+	operationID string, logger *logrus.Entry) error {
+	// log release result
+	r.logReleaseResult(*app, resultSucceeded, "", logger)
+
+	// update aksapp reconciliation status
+	app.Status.Reconciliation = deployerv1.Reconciliation{
+		LastReconcileTime: metav1.Now(),
+		Message:           "",
+		OperationID:       operationID,
+		Result:            deployerv1.ReconciliationSucceeded,
+	}
+
+	// update aksapp rollout status
+	if err := r.updateRolloutStatus(app, objs, logger); err != nil {
+		logger.Errorf("unable to update aksapp rollout status, %s", err.Error())
+		return err
+	}
+
+	ctx := context.TODO()
+	if err := r.Status().Update(ctx, app); err != nil {
+		logger.Errorf("unable to update aksapp status, %s", err.Error())
+		return err
+	}
+
+	logger.Info("updated succeeded reconciliation status")
+
+	return nil
+}
+
+func (r *AksAppReconciler) logReleaseResult(app deployerv1.AksApp,
+	result, reason string, logger *logrus.Entry) {
+	fields := map[string]interface{}{
+		"releaseResult": result,
+		"reason":        reason,
+	}
+	logger = logger.WithFields(fields)
+	logger.Infof("[release result] %s/%s: %q, reason: %q", app.Namespace, app.Name, result, reason)
+
+	releaseResultVec.WithLabelValues(app.Namespace, app.Name, app.Spec.Type, result).Set(1)
+
+	resultToReset := resultFailed
+	if strings.EqualFold(result, resultFailed) {
+		resultToReset = resultSucceeded
+	}
+
+	// set the other result to 0
+	releaseResultVec.WithLabelValues(app.Namespace, app.Name, app.Spec.Type, resultToReset).Set(0)
+}
+
+func (r *AksAppReconciler) resetReleaseResult() {
+	fields := map[string]interface{}{
+		"aksapp":      "resetReleaseResult",
+		"operationID": uuid.NewV4().String(),
+	}
+	logger := r.Logger.WithFields(fields)
+	logger.Info("reset release result metric")
+	releaseResultVec.Reset()
 }
 
 func checkAfterReplace(data string, logger *logrus.Entry) error {
@@ -798,12 +1057,5 @@ func checkAfterReplace(data string, logger *logrus.Entry) error {
 		logger.Errorf("There are still (V_*) left not replaced: %s", strings.Join(allNotReplaced, ","))
 		return errors.New("deployer place holders left not replaced")
 	}
-	return nil
-}
-
-func (r *AksAppReconciler) updateSucceededReconciliation(app *deployerv1.AksApp,
-	objs []*unstructured.Unstructured,
-	operationID string, logger *logrus.Entry) error {
-	// TODO: add code
 	return nil
 }

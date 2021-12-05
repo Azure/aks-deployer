@@ -1,0 +1,136 @@
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.2.5
+  creationTimestamp: null
+  name: aksapps.deployer.aks
+spec:
+  additionalPrinterColumns:
+    - JSONPath: .spec.version
+      name: VERSION
+      type: string
+    - JSONPath: .spec.type
+      name: TYPE
+      type: string
+    - JSONPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    - JSONPath: .status.reconciliation.result
+      name: Status
+      type: string
+  group: deployer.aks
+  names:
+    kind: AksApp
+    listKind: AksAppList
+    plural: aksapps
+    singular: aksapp
+  scope: Namespaced
+  subresources:
+    status: {}
+  validation:
+    openAPIV3Schema:
+      description: AksApp is the Schema for the aksapps API
+      properties:
+        apiVersion:
+          type: string
+        kind:
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: AksAppSpec defines the desired state of AksApp
+          properties:
+            credentials:
+              additionalProperties:
+                type: string
+              nullable: true
+              type: object
+            secrets:
+              additionalProperties:
+                type: string
+              nullable: true
+              type: object
+            type:
+              type: string
+            unmanagedSecrets:
+              items:
+                type: string
+              nullable: true
+              type: array
+            variables:
+              additionalProperties:
+                type: string
+              type: object
+            version:
+              type: string
+          required:
+            - type
+            - variables
+            - version
+          type: object
+        status:
+          description: AksAppStatus defines the observed state of AksApp
+          properties:
+            reconciliation:
+              description: Reconciliation result of AksApp
+              properties:
+                lastReconcileTime:
+                  format: date-time
+                  nullable: true
+                  type: string
+                message:
+                  type: string
+                operationId:
+                  type: string
+                result:
+                  description:
+                    ReconciliationResult is the type for reconciliation
+                    result
+                  type: string
+              type: object
+            replicas:
+              description: Number of total replicas per AksApp
+              format: int32
+              type: integer
+            rollout:
+              description: Rollout status of AksApp
+              type: string
+            rolloutVersion:
+              description: Rollout version of AksApp
+              type: string
+            rollouts:
+              description: The list of all rollouts per AksApp
+              items:
+                description: Rollout is the type for rollout
+                properties:
+                  name:
+                    type: string
+                  replicas:
+                    format: int32
+                    type: integer
+                  rollout:
+                    description: RolloutStatus is the type for rollout status
+                    type: string
+                  unavailableReplicas:
+                    format: int32
+                    type: integer
+                type: object
+              type: array
+            unavailableReplicas:
+              description: Number of total unavailable replicas per AksApp
+              format: int32
+              type: integer
+          type: object
+      type: object
+  version: v1
+  versions:
+    - name: v1
+      served: true
+      storage: true
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []
