@@ -9,6 +9,7 @@ require (
 	github.com/Azure/go-autorest/autorest/azure/auth v0.5.9 // indirect
 	github.com/Azure/go-autorest/autorest/to v0.4.0 // indirect
 	github.com/Azure/go-autorest/autorest/validation v0.3.1 // indirect
+	github.com/gofrs/uuid v4.2.0+incompatible // indirect
 	github.com/golang/mock v1.4.3
 	github.com/gorilla/mux v1.8.0 // indirect
 	github.com/onsi/ginkgo v1.16.4
