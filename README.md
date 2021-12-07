@@ -1,6 +1,6 @@
-## Project not ready
+## AKS Deployer
 
-This is work in progress. Will update once ready.
+AKS Deployer can be used to help deploying applications to AKS managed clusters. It defines a custom resource for app definition. A syncer can be used to continuously monitor a blob storage for yaml files that contain all the applications that are needed in a cluster. Whenever those yaml files change, the deployer will keep reconciling the state of the cluster to match those definition. It also contains code to help managing secrets or managed identity using Azure Key Vault.
 
 ## Contributing
 
